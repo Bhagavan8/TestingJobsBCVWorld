@@ -23,6 +23,7 @@ body {
     color: var(--text-primary);
     background-color: var(--bg-white);
     font-size: 14px;
+    overflow-x: hidden;
 }
 
 /* ===== LAYOUT & CONTAINERS ===== */
@@ -200,6 +201,9 @@ body {
     padding: 6px 10px;
     border-radius: 999px;
     background: #f5f7fa;
+    display: inline-flex;
+    width: auto;
+    max-width: max-content;
 }
 
 #locationWrapper { background: #e8f2ff; color: #0b74de; }
@@ -1331,6 +1335,8 @@ body {
     .skill-tag {
         font-size: 12px;
         padding: 6px 12px;
+        word-break: break-word;
+        overflow-wrap: anywhere;
     }
 
     .community-btn {
@@ -1343,6 +1349,15 @@ body {
         min-height: 150px;
         padding: 16px;
     }
+}
+
+@media (max-width: 767px) {
+    .job-navigation-grid { grid-template-columns: 1fr !important; }
+    .nav-job-content { flex-direction: column !important; align-items: center !important; text-align: center !important; }
+}
+
+@media (max-width: 576px) {
+    #commentLoggedOut .d-flex { flex-direction: column; gap: 8px; align-items: flex-start; }
 }
 
 /* Extra Small Mobile Devices (under 360px) */
