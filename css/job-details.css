@@ -443,6 +443,8 @@ body {
     text-align: left;
     max-width: 800px;
     margin: 0 auto;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .description-content p {
@@ -532,6 +534,8 @@ body {
     max-width: 800px;
     margin: 0 auto;
     text-align: left;
+    word-break: break-word;
+    overflow-wrap: anywhere;
     word-spacing: normal;
     letter-spacing: normal;
 }
@@ -1363,7 +1367,8 @@ body {
     .job-navigation-grid { grid-template-columns: 1fr !important; }
     .nav-job-content { flex-direction: column !important; align-items: center !important; text-align: center !important; }
     .skills-container { display: grid; grid-template-columns: 1fr; gap: 6px; justify-items: center; }
-    .skill-tag { display: inline-block; }
+    .skill-tag { display: block; width: 100%; }
+    .nav-view-btn { display: inline-flex; justify-content: center; margin: 0 auto; }
 }
 
 @media (max-width: 576px) {

@@ -1485,11 +1485,6 @@ class JobDetailsManager {
                 const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
                 processedText = processedText.replace(regex, '<strong>$&</strong>');
             });
-            processedText = processedText
-                .replace(/\s*,\s*/g, ', ')
-                .replace(/\s*\/\s*/g, ' / ')
-                .replace(/\s*:\s*/g, ': ')
-                .replace(/\s{2,}/g, ' ');
             return processedText;
         };
 
