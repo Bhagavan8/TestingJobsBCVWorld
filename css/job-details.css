@@ -547,7 +547,7 @@ body {
 
 /* ===== COMMUNITY SECTION ===== */
 .community-section {
-    background: var(--bg-gray);
+    background: transparent;
     border-radius: var(--border-radius);
     margin: 24px 0;
     width: 100%;
@@ -1347,7 +1347,7 @@ body {
 }
 
     .community-btn {
-        width: 100%;
+        width: auto;
         justify-content: center;
     }
 
@@ -1565,7 +1565,7 @@ body {
     }
 
     .community-btn {
-        width: 100%;
+        width: auto;
         justify-content: center;
     }
 
@@ -1765,7 +1765,7 @@ body {
     }
 
     .community-btn {
-        width: 100%;
+        width: auto;
         justify-content: center;
     }
 
