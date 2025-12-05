@@ -23,7 +23,6 @@ body {
     color: var(--text-primary);
     background-color: var(--bg-white);
     font-size: 14px;
-    overflow-x: hidden;
 }
 
 /* ===== LAYOUT & CONTAINERS ===== */
@@ -203,10 +202,6 @@ body {
     padding: 6px 10px;
     border-radius: 999px;
     background: #f5f7fa;
-    display: inline-flex;
-    width: auto;
-    max-width: max-content;
-    text-align: center;
 }
 
 #locationWrapper { background: #e8f2ff; color: #0b74de; }
@@ -1369,6 +1364,9 @@ body {
     .skills-container { display: grid; grid-template-columns: 1fr; gap: 6px; justify-items: center; }
     .skill-tag { display: block; width: 100%; }
     .nav-view-btn { display: inline-flex; justify-content: center; margin: 0 auto; }
+    .social-share-buttons { flex-wrap: wrap !important; justify-content: center !important; width: 100%; }
+    .social-share-buttons .social-share-btn { flex: 1 1 45%; min-width: 140px; }
+    body, .page-wrapper, .main-container { overflow-x: hidden; }
 }
 
 @media (max-width: 576px) {
@@ -1376,11 +1374,7 @@ body {
 }
 
 /* Social share fixes */
-.social-share-buttons { flex-wrap: wrap !important; justify-content: center !important; width: 100%; }
-.social-share-buttons .social-share-btn { flex: 1 1 45%; min-width: 140px; }
-
-/* Prevent horizontal overflow */
-.page-wrapper, .main-container { max-width: 100vw; overflow-x: hidden; }
+.page-wrapper, .main-container { }
 
 /* Extra Small Mobile Devices (under 360px) */
 @media (max-width: 359px) {
