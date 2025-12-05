@@ -2014,7 +2014,7 @@ a {
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.2s ease;
-    z-index: 100001;
+    z-index: 100010;
 }
 
 .scroll-top.show { opacity: 1; pointer-events: auto; }
@@ -2022,6 +2022,9 @@ a {
 @media (max-width: 767px) {
     .scroll-top { bottom: calc(12px + env(safe-area-inset-bottom)); left: calc(12px + env(safe-area-inset-left)); right: auto; width: 36px; height: 36px; }
 }
+
+.sticky-active .scroll-top { bottom: calc(16px + var(--sticky-height-desktop)); }
+@media (max-width: 600px) { .sticky-active .scroll-top { bottom: calc(12px + var(--sticky-height-mobile)); left: calc(12px + env(safe-area-inset-left)); right: auto; } }
 
 @media (max-width: 767px) {
     .overview-section { text-align: left; }

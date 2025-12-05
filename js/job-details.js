@@ -1762,8 +1762,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const ins = sticky ? sticky.querySelector('ins.adsbygoogle') : null;
         var userDismissed = false;
         var autoHiddenByFooter = false;
-        function showSticky(){ if (sticky){ sticky.classList.add('active'); sticky.setAttribute('aria-hidden','false'); } }
-        function hideSticky(){ if (sticky){ sticky.classList.remove('active'); sticky.setAttribute('aria-hidden','true'); } }
+        function showSticky(){ if (sticky){ sticky.classList.add('active'); sticky.setAttribute('aria-hidden','false'); document.body.classList.add('sticky-active'); } }
+        function hideSticky(){ if (sticky){ sticky.classList.remove('active'); sticky.setAttribute('aria-hidden','true'); document.body.classList.remove('sticky-active'); } }
         if (close) close.addEventListener('click', function(){ userDismissed = true; hideSticky(); });
         if (ins) {
             try { (window.adsbygoogle = window.adsbygoogle || []).push({}); }
