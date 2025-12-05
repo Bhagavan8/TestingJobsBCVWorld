@@ -2023,6 +2023,16 @@ a {
     .scroll-top { bottom: calc(12px + env(safe-area-inset-bottom)); left: calc(12px + env(safe-area-inset-left)); right: auto; width: 36px; height: 36px; }
 }
 
+@media (max-width: 767px) {
+    .overview-section { text-align: left; }
+    .section-title { text-align: left; }
+    .description-content,
+    .qualifications-content {
+        max-width: 100%;
+        margin: 0;
+    }
+}
+
 @media (min-width: 992px) and (max-width: 1199px) {
     .scroll-top { right: 160px; }
 }
