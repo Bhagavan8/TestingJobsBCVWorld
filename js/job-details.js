@@ -1,0 +1,1985 @@
+import { db } from './firebase-config.js';
+import {
+    doc,
+    getDoc,
+    updateDoc,
+    serverTimestamp,
+    setDoc,
+    collection,
+    query,
+    where,
+    orderBy,
+    limit,
+    getDocs,
+    increment,
+    onSnapshot,
+    arrayUnion,
+    arrayRemove
+} from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+import { getAuth } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+const auth = getAuth();
+
+class JobDetailsManager {
+    constructor() {
+        if (typeof JobDetailsManager.instance === 'object') {
+            return JobDetailsManager.instance;
+        }
+
+        JobDetailsManager.instance = this;
+        this.jobId = new URLSearchParams(window.location.search).get('id');
+        this.jobType = new URLSearchParams(window.location.search).get('type');
+        this.currentJob = null;
+        this.currentCompany = null;
+        this.viewsTracked = false;
+        this.cache = new Map();
+        this.adsInitialized = false;
+        this.adContainersInitialized = new Set();
+
+        this.viewStart = Date.now();
+        this.durationCaptured = false;
+
+        this._comments = [];
+        this._commentsPage = 1;
+        this._commentsPageSize = 5;
+
+        this.setupDurationTracking();
+
+        this.loadCommonComponents();
+        this.init();
+        this.initializeCopyLink();
+
+        return this;
+    }
+
+    async loadCommonComponents() {
+        try {
+            // Load header
+            const headerResponse = await fetch('/components/header.html');
+            const headerHtml = await headerResponse.text();
+            document.getElementById('header-container').innerHTML = headerHtml;
+
+            // Load footer
+            const footerResponse = await fetch('/components/footer.html');
+            const footerHtml = await footerResponse.text();
+            document.getElementById('footer-container').innerHTML = footerHtml;
+
+            console.log('Header and footer loaded successfully');
+            
+            this.initializeHeaderFooterScripts();
+            
+        } catch (error) {
+            console.error('Error loading common components:', error);
+            this.createFallbackHeaderFooter();
+        }
+    }
+
+    initializeHeaderFooterScripts() {
+        const mobileMenuToggle = document.querySelector('.mobile-menu-toggle');
+        if (mobileMenuToggle) {
+            mobileMenuToggle.addEventListener('click', () => {
+                document.querySelector('.nav-menu')?.classList.toggle('active');
+            });
+        }
+    }
+
+    createFallbackHeaderFooter() {
+        const headerContainer = document.getElementById('header-container');
+        const footerContainer = document.getElementById('footer-container');
+        
+        if (headerContainer && !headerContainer.innerHTML.trim()) {
+            headerContainer.innerHTML = `
+                <nav class="navbar navbar-expand-lg navbar-light bg-light">
+                    <div class="container">
+                        <a class="navbar-brand" href="/">BCV World</a>
+                        <a href="/html/jobs.html" class="btn btn-primary">Back to Jobs</a>
+                    </div>
+                </nav>
+            `;
+        }
+        
+        if (footerContainer && !footerContainer.innerHTML.trim()) {
+            footerContainer.innerHTML = `
+                <footer class="bg-dark text-light py-3 mt-5">
+                    <div class="container text-center">
+                        <p>&copy; 2024 BCV World. All rights reserved.</p>
+                    </div>
+                </footer>
+            `;
+        }
+    }
+
+    async init() {
+        await this.loadJobDetails();
+        if (this.currentJob) {
+            await this.recordViewCounts();
+            this.setupEventListeners();
+            this.initializeAds();
+            this.setupNavigationScroll();
+            this.initializeComments();
+        }
+    }
+
+    ensureAnonId() {
+        try {
+            const key = 'bcvworld_anon_id';
+            let id = localStorage.getItem(key);
+            if (!id) {
+                id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+                localStorage.setItem(key, id);
+            }
+            return id;
+        } catch (_) { return 'anon'; }
+    }
+
+    setupDurationTracking() {
+        const el = document.getElementById('viewTimerValue');
+        if (!el) return;
+        this._pausedMs = 0;
+        this._pauseStart = null;
+        const update = () => {
+            const base = Date.now() - this.viewStart - (this._pausedMs || 0);
+            const s = Math.max(0, Math.floor(base / 1000));
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            el.textContent = h > 0
+                ? `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+                : `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+        };
+        update();
+        this._timerHandle = setInterval(update, 1000);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                this._pauseStart = Date.now();
+            } else if (this._pauseStart) {
+                this._pausedMs += Date.now() - this._pauseStart;
+                this._pauseStart = null;
+            }
+        }, { passive: true });
+    }
+
+    async loadJobDetails() {
+        try {
+            if (!this.jobId || !this.jobType) {
+                console.log('Missing job ID or type');
+                window.location.href = '/html/jobs.html';
+                return;
+            }
+
+            const cacheKey = `job_${this.jobId}`;
+            if (this.cache.has(cacheKey)) {
+                const cachedData = this.cache.get(cacheKey);
+                this.currentJob = cachedData.job;
+                this.currentCompany = cachedData.company;
+                await this.updateUI();
+                return;
+            }
+
+            const jobRef = doc(db, this.getCollectionName(), this.jobId);
+            const jobDoc = await getDoc(jobRef);
+
+            if (jobDoc.exists()) {
+                this.currentJob = { id: jobDoc.id, ...jobDoc.data() };
+
+                this.cache.set(cacheKey, {
+                    job: this.currentJob,
+                    timestamp: Date.now()
+                });
+
+                this.updateViewCount(jobRef).catch(console.error);
+                await this.updateUI();
+            } else {
+                console.log('Job not found');
+                window.location.href = '/html/jobs.html';
+            }
+        } catch (error) {
+            console.error('Error loading job details:', error);
+            this.showToast('Failed to load job details', 'error');
+        }
+    }
+
+    async updateUI() {
+        await Promise.all([
+            this.fetchAndMergeCompanyData(),
+            this.updateJobHeaderDetails(this.currentJob),
+            this.updateJobContentSections(this.currentJob)
+        ]);
+
+        if (this.currentCompany) {
+            this.updateCompanyDisplay(this.currentCompany);
+        }
+        
+        this.updateJobStats(this.currentJob);
+        this.listenToLikesRealtime();
+        
+        // UPDATE: Add meta tags update for social sharing
+        this.updateMetaTagsForSharing(this.currentJob);
+        
+        // NEW: Load before/after jobs navigation
+        await this.loadBeforeAfterJobs();
+        
+        this.initializeSocialShare();
+        this.setupEventListeners();
+        
+        console.log('UI updated successfully');
+    }
+
+    listenToLikesRealtime() {
+        try {
+            if (!this.jobId) return;
+            const jobRef = doc(db, this.getCollectionName(), this.jobId);
+            let lastLikes = this.currentJob?.likes || 0;
+            let isFirst = true;
+            if (this._likesUnsub) { this._likesUnsub(); this._likesUnsub = null; }
+            this._likesUnsub = onSnapshot(jobRef, (snap) => {
+                if (!snap.exists()) return;
+                const data = snap.data();
+                const likes = data.likes || 0;
+                const el = document.getElementById('likeCount');
+                if (el) el.textContent = likes;
+                const likedByMeRecently = this._suppressLikeToastTs && (Date.now() - this._suppressLikeToastTs < 2000);
+                const userId = (auth && auth.currentUser) ? auth.currentUser.uid : null;
+                const lastLikerId = data.lastLikerId || null;
+                const lastLikedAt = data.lastLikedAt?.toDate ? data.lastLikedAt.toDate() : null;
+                const recentMs = lastLikedAt ? (Date.now() - lastLikedAt.getTime()) : Infinity;
+                if (isFirst) {
+                    if (recentMs < 5000 && lastLikerId && lastLikerId !== userId) {
+                        this.showToast('Someone liked this job', 'success');
+                    }
+                    isFirst = false;
+                } else if (likes > lastLikes && !likedByMeRecently && lastLikerId !== userId) {
+                    this.showToast('Someone liked this job', 'success');
+                }
+                lastLikes = likes;
+            });
+        } catch (_) {}
+    }
+
+    // NEW METHOD: Update meta tags for social sharing
+    updateMetaTagsForSharing(job) {
+        const jobTitle = job.jobTitle || job.postName || 'Latest Job Opportunity';
+        const companyName = job.companyName || job.bankName || 'Top Company';
+        const jobDescription = job.description ? 
+            job.description.substring(0, 160) + '...' : 
+            'Apply for this amazing job opportunity with great benefits and career growth. Join now!';
+        const currentUrl = window.location.href;
+        
+        // Generate OG Image URL
+        const ogImageUrl = this.generateOGImageUrl(jobTitle, companyName);
+        
+        // Update Open Graph tags
+        this.updateMetaTag('property', 'og:title', `${jobTitle} at ${companyName} | BCVWorld`);
+        this.updateMetaTag('property', 'og:description', jobDescription);
+        this.updateMetaTag('property', 'og:url', currentUrl);
+        this.updateMetaTag('property', 'og:image', ogImageUrl);
+        this.updateMetaTag('property', 'og:image:width', '1200');
+        this.updateMetaTag('property', 'og:image:height', '630');
+        this.updateMetaTag('property', 'og:site_name', 'BCVWorld');
+        this.updateMetaTag('property', 'og:type', 'article');
+        
+        // Update Twitter tags
+        this.updateMetaTag('property', 'twitter:card', 'summary_large_image');
+        this.updateMetaTag('property', 'twitter:title', `${jobTitle} at ${companyName} | BCVWorld`);
+        this.updateMetaTag('property', 'twitter:description', jobDescription);
+        this.updateMetaTag('property', 'twitter:image', ogImageUrl);
+        
+        // Update page title
+        document.title = `${jobTitle} at ${companyName} | BCVWorld`;
+        
+        console.log('Meta tags updated for sharing:', { jobTitle, companyName, ogImageUrl });
+    }
+
+    // NEW METHOD: Update individual meta tag
+    updateMetaTag(attribute, name, content) {
+        let metaTag = document.querySelector(`meta[${attribute}="${name}"]`);
+        if (!metaTag) {
+            metaTag = document.createElement('meta');
+            metaTag.setAttribute(attribute, name);
+            document.head.appendChild(metaTag);
+        }
+        metaTag.setAttribute('content', content);
+    }
+
+    // NEW METHOD: Generate OG Image URL
+    generateOGImageUrl(jobTitle, companyName) {
+        const baseImageUrl = 'https://bcvworld.com/assets/images/bcvworld-og.png';
+        
+        // If you want to add parameters for dynamic generation later
+        const params = new URLSearchParams({
+            title: encodeURIComponent(jobTitle.substring(0, 50)),
+            company: encodeURIComponent(companyName.substring(0, 30)),
+            v: '1.0'
+        });
+        
+        return `${baseImageUrl}?${params.toString()}`;
+    }
+
+    // NEW METHOD: Load before/after jobs navigation
+    async loadBeforeAfterJobs() {
+        try {
+            if (!this.currentJob) return;
+
+            const previousJobCard = document.getElementById('previousJobCard');
+            const nextJobCard = document.getElementById('nextJobCard');
+
+            if (!previousJobCard || !nextJobCard) return;
+
+            // Add loading state
+            previousJobCard.classList.add('loading');
+            nextJobCard.classList.add('loading');
+
+            // Get current job's creation timestamp or use current time as fallback
+            const currentJobTimestamp = this.currentJob.createdAt || new Date();
+            const jobType = this.jobType || 'private';
+
+            // Query for previous job (created before current job)
+            const previousJobQuery = query(
+                collection(db, this.getCollectionName()),
+                where('createdAt', '<', currentJobTimestamp),
+                orderBy('createdAt', 'desc'),
+                limit(1)
+            );
+
+            // Query for next job (created after current job)
+            const nextJobQuery = query(
+                collection(db, this.getCollectionName()),
+                where('createdAt', '>', currentJobTimestamp),
+                orderBy('createdAt', 'asc'),
+                limit(1)
+            );
+
+            // Execute both queries with timeout protection
+            const timeoutPromise = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Navigation query timeout')), 5000)
+            );
+
+            const navigationPromise = Promise.all([
+                getDocs(previousJobQuery),
+                getDocs(nextJobQuery)
+            ]);
+
+            const [previousSnapshot, nextSnapshot] = await Promise.race([
+                navigationPromise,
+                timeoutPromise
+            ]);
+
+            // Handle previous job
+            if (!previousSnapshot.empty) {
+                const previousJobDoc = previousSnapshot.docs[0];
+                const previousJob = { id: previousJobDoc.id, ...previousJobDoc.data() };
+                await this.populateNavigationCard(previousJobCard, previousJob, 'previous', jobType);
+            } else {
+                // Fallback: try to get the most recent job if no previous job found
+                const fallbackQuery = query(
+                    collection(db, this.getCollectionName()),
+                    orderBy('createdAt', 'desc'),
+                    limit(2)
+                );
+                const fallbackSnapshot = await getDocs(fallbackQuery);
+                
+                if (fallbackSnapshot.docs.length > 1) {
+                    const fallbackJob = fallbackSnapshot.docs[1];
+                    const fallbackJobData = { id: fallbackJob.id, ...fallbackJob.data() };
+                    await this.populateNavigationCard(previousJobCard, fallbackJobData, 'previous', jobType);
+                } else {
+                    this.showEmptyNavigationCard(previousJobCard, 'No previous job available');
+                }
+            }
+
+            // Handle next job
+            if (!nextSnapshot.empty) {
+                const nextJobDoc = nextSnapshot.docs[0];
+                const nextJob = { id: nextJobDoc.id, ...nextJobDoc.data() };
+                await this.populateNavigationCard(nextJobCard, nextJob, 'next', jobType);
+            } else {
+                // Fallback: try to get the oldest job if no next job found
+                const fallbackQuery = query(
+                    collection(db, this.getCollectionName()),
+                    orderBy('createdAt', 'asc'),
+                    limit(2)
+                );
+                const fallbackSnapshot = await getDocs(fallbackQuery);
+                
+                if (fallbackSnapshot.docs.length > 1) {
+                    const fallbackJob = fallbackSnapshot.docs[1];
+                    const fallbackJobData = { id: fallbackJob.id, ...fallbackJob.data() };
+                    await this.populateNavigationCard(nextJobCard, fallbackJobData, 'next', jobType);
+                } else {
+                    this.showEmptyNavigationCard(nextJobCard, 'No next job available');
+                }
+            }
+
+        } catch (error) {
+            console.error('Error loading before/after jobs:', error);
+            
+            // Show user-friendly error messages
+            const errorMessage = error.message === 'Navigation query timeout' 
+                ? 'Loading timeout - please refresh' 
+                : 'Unable to load navigation';
+                
+            this.showEmptyNavigationCard(document.getElementById('previousJobCard'), errorMessage);
+            this.showEmptyNavigationCard(document.getElementById('nextJobCard'), errorMessage);
+        } finally {
+            // Remove loading state
+            const previousJobCard = document.getElementById('previousJobCard');
+            const nextJobCard = document.getElementById('nextJobCard');
+            if (previousJobCard) previousJobCard.classList.remove('loading');
+            if (nextJobCard) nextJobCard.classList.remove('loading');
+        }
+    }
+
+    // NEW METHOD: Populate navigation card with job data
+    async populateNavigationCard(cardElement, job, direction, jobType) {
+        try {
+            // Get company data if available
+            let companyData = {};
+            if (job.companyId) {
+                const companyDocRef = doc(db, 'companies', job.companyId);
+                const companyDoc = await getDoc(companyDocRef);
+                if (companyDoc.exists()) {
+                    companyData = companyDoc.data();
+                }
+            }
+
+            // Update card elements
+            const jobTitle = job.jobTitle || job.postName || 'Job Title';
+            const companyName = companyData.name || job.companyName || job.bankName || 'Company Name';
+            const education = job.educationLevel || job.qualification || 'Education requirements not specified';
+            const companyLogo = companyData.logo || job.companyLogo;
+
+            // Update job title
+            const jobTitleEl = cardElement.querySelector('.nav-job-title');
+            if (jobTitleEl) jobTitleEl.textContent = jobTitle;
+
+            // Update company name
+            const companyNameEl = cardElement.querySelector('.nav-company-name');
+            if (companyNameEl) companyNameEl.textContent = companyName;
+
+            // Update education
+            const educationEl = cardElement.querySelector('.nav-education');
+            if (educationEl) {
+                const formattedEducation = this.capitalizeEducationFirstLetter(education);
+                educationEl.textContent = formattedEducation;
+            }
+
+            // Update company logo
+            const logoImg = cardElement.querySelector('.nav-logo-img');
+            if (logoImg) {
+                const logoSrc = companyLogo?.startsWith('http') 
+                    ? companyLogo 
+                    : `/assets/images/companies/${companyLogo || 'default-company.webp'}`;
+                logoImg.src = logoSrc;
+                logoImg.alt = `${companyName} Logo`;
+                
+                // Add error handling for logo
+                logoImg.onerror = function() {
+                    this.src = '/assets/images/companies/default-company.webp';
+                };
+            }
+
+            // Update view button link
+            const viewBtn = cardElement.querySelector('.nav-view-btn');
+            if (viewBtn) {
+                const jobUrl = `/html/job-details.html?id=${job.id}&type=${jobType}`;
+                viewBtn.setAttribute('onclick', `window.location.href='${jobUrl}'`);
+            }
+
+            // Add click handler to entire card
+            cardElement.addEventListener('click', (e) => {
+                if (!e.target.closest('.nav-view-btn')) {
+                    const jobUrl = `/html/job-details.html?id=${job.id}&type=${jobType}`;
+                    window.location.href = jobUrl;
+                }
+            });
+
+            // Remove any empty state classes
+            cardElement.classList.remove('empty', 'hidden');
+
+        } catch (error) {
+            console.error(`Error populating ${direction} navigation card:`, error);
+            this.showEmptyNavigationCard(cardElement, 'Error loading job details');
+        }
+    }
+
+    // NEW METHOD: Show empty navigation card
+    showEmptyNavigationCard(cardElement, message) {
+        cardElement.classList.add('empty');
+        
+        const jobTitleEl = cardElement.querySelector('.nav-job-title');
+        const companyNameEl = cardElement.querySelector('.nav-company-name');
+        const educationEl = cardElement.querySelector('.nav-education');
+        const viewBtn = cardElement.querySelector('.nav-view-btn');
+        const logoImg = cardElement.querySelector('.nav-logo-img');
+
+        if (jobTitleEl) jobTitleEl.textContent = message;
+        if (companyNameEl) companyNameEl.textContent = '';
+        if (educationEl) educationEl.textContent = '';
+        if (viewBtn) {
+            viewBtn.style.display = 'none';
+        }
+        if (logoImg) {
+            logoImg.src = '/assets/images/default-company.webp';
+            logoImg.alt = 'No company logo';
+        }
+    }
+
+    initializeSocialShare() {
+        const shareButtons = document.querySelectorAll('.social-share-btn');
+        
+        console.log(`Found ${shareButtons.length} social share buttons`);
+        
+        if (shareButtons.length === 0) {
+            console.error('No social share buttons found in DOM');
+            return;
+        }
+        
+        shareButtons.forEach(button => {
+            button.addEventListener('click', (e) => {
+                e.preventDefault();
+                const platform = button.getAttribute('data-platform');
+                console.log(`Share button clicked: ${platform}`);
+                this.handleSocialShare(platform);
+            });
+        });
+
+        shareButtons.forEach(button => {
+            button.addEventListener('touchstart', function() {
+                this.style.transform = 'scale(0.95)';
+            });
+            
+            button.addEventListener('touchend', function() {
+                this.style.transform = 'scale(1)';
+            });
+        });
+    }
+
+    initializeComments() {
+        const section = document.getElementById('commentsSection');
+        if (!section) return;
+        const form = document.getElementById('commentForm');
+        const input = document.getElementById('commentInput');
+        const submit = document.getElementById('commentSubmit');
+        const loggedOut = document.getElementById('commentLoggedOut');
+        const loginBtn = document.getElementById('loginRedirectBtn');
+        const list = document.getElementById('commentList');
+
+        this.loadComments();
+
+        if (loginBtn) {
+            const returnUrl = window.location.href;
+            loginBtn.href = `/pages/login.html?redirect=${encodeURIComponent(returnUrl)}`;
+            loginBtn.addEventListener('click', () => {
+                try { localStorage.setItem('post_login_redirect', returnUrl); } catch (_) {}
+            });
+        }
+
+        const user = (auth && auth.currentUser) ? auth.currentUser : null;
+        if (!user) {
+            if (form) form.classList.add('d-none');
+            if (loggedOut) loggedOut.style.display = 'block';
+            return;
+        }
+
+        if (loggedOut) loggedOut.style.display = 'none';
+        if (form) form.classList.remove('d-none');
+
+        if (form && submit && input) {
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const text = (input.value || '').trim();
+                if (!text) {
+                    this.showToast && this.showToast('Please enter a comment', 'error');
+                    return;
+                }
+                try {
+                    submit.disabled = true;
+                    const docId = `${this.jobId}_${user.uid}_${Date.now()}`;
+                    await setDoc(doc(db, 'jobComments', docId), {
+                        jobId: this.jobId,
+                        type: this.jobType || '',
+                        userId: user.uid,
+                        displayName: (user.displayName || (user.email ? user.email.split('@')[0] : '') || 'Anonymous'),
+                        photoURL: user.photoURL || '',
+                        email: user.email || '',
+                        comment: text,
+                        createdAt: serverTimestamp(),
+                        page: 'job-details'
+                    });
+                    input.value = '';
+                    this.showToast && this.showToast('Comment posted', 'success');
+                    this.appendComment({ comment: text, userId: user.uid, displayName: (user.displayName || (user.email ? user.email.split('@')[0] : '') || 'You'), createdAt: new Date() });
+                } catch (err) {
+                    this.showToast && this.showToast('Failed to post comment', 'error');
+                } finally {
+                    submit.disabled = false;
+                }
+            });
+        }
+    }
+
+    async loadComments() {
+        try {
+            const list = document.getElementById('commentList');
+            if (!list) return;
+            const q = query(
+                collection(db, 'jobComments'),
+                where('jobId', '==', this.jobId)
+            );
+            const snap = await getDocs(q);
+            const items = snap.docs.map(d => d.data());
+            items.sort((a, b) => {
+                const ta = a.createdAt?.seconds ? a.createdAt.seconds * 1000 : 0;
+                const tb = b.createdAt?.seconds ? b.createdAt.seconds * 1000 : 0;
+                return tb - ta;
+            });
+            this._comments = items;
+            this._commentsPage = 1;
+            this.renderCommentsPage();
+            this.renderCommentsPager();
+        } catch (_) {}
+    }
+
+    appendComment(item) {
+        this._comments = [{...item}, ...this._comments];
+        this._commentsPage = 1;
+        this.renderCommentsPage();
+        this.renderCommentsPager();
+    }
+
+    renderCommentsPage() {
+        const list = document.getElementById('commentList');
+        if (!list) return;
+        const start = (this._commentsPage - 1) * this._commentsPageSize;
+        const pageItems = this._comments.slice(start, start + this._commentsPageSize);
+        list.innerHTML = '';
+        pageItems.forEach(item => {
+            const when = this.formatTime(item.createdAt);
+            const name = this.escapeHtml(item.displayName || (item.email ? String(item.email).split('@')[0] : '') || 'Anonymous');
+            const rawText = String(item.comment || '');
+            const truncated = rawText.length > 100 ? rawText.slice(0, 100) + '…' : rawText;
+            const safeText = this.escapeHtml(truncated);
+            const el = document.createElement('div');
+            el.className = 'list-group-item';
+            el.innerHTML = `
+                <div class="d-flex justify-content-between align-items-start">
+                    <div class="me-3 comment-text">${safeText}</div>
+                    <div class="text-end" style="min-width:90px;">
+                        <div class="fw-semibold" style="font-size:12px;">${name}</div>
+                        <small class="text-muted">${when}</small>
+                    </div>
+                </div>
+            `;
+            list.appendChild(el);
+        });
+    }
+
+    renderCommentsPager() {
+        const pager = document.getElementById('commentPager');
+        if (!pager) return;
+        const total = this._comments.length;
+        const pages = Math.max(1, Math.ceil(total / this._commentsPageSize));
+        if (pages <= 1) { pager.innerHTML = ''; return; }
+        let html = '<ul class="pagination pagination-sm">';
+        const prevDisabled = this._commentsPage === 1 ? ' disabled' : '';
+        const nextDisabled = this._commentsPage === pages ? ' disabled' : '';
+        html += `<li class="page-item${prevDisabled}"><a class="page-link" href="#" data-page="prev" aria-label="Previous">«</a></li>`;
+        for (let p = 1; p <= pages; p++) {
+            const active = p === this._commentsPage ? ' active' : '';
+            html += `<li class="page-item${active}"><a class="page-link" href="#" data-page="${p}">${p}</a></li>`;
+        }
+        html += `<li class="page-item${nextDisabled}"><a class="page-link" href="#" data-page="next" aria-label="Next">»</a></li>`;
+        html += '</ul>';
+        pager.innerHTML = html;
+        pager.querySelectorAll('.page-link').forEach(a => {
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                const val = a.getAttribute('data-page');
+                if (val === 'prev' && this._commentsPage > 1) { this._commentsPage--; }
+                else if (val === 'next' && this._commentsPage < pages) { this._commentsPage++; }
+                else {
+                    const num = parseInt(val, 10);
+                    if (!isNaN(num)) this._commentsPage = num;
+                }
+                this.renderCommentsPage();
+                this.renderCommentsPager();
+            });
+        });
+    }
+
+    formatTime(ts) {
+        try {
+            if (!ts) return 'now';
+            if (ts.seconds) return new Date(ts.seconds * 1000).toLocaleString();
+            if (typeof ts === 'number') return new Date(ts).toLocaleString();
+            if (ts instanceof Date) return ts.toLocaleString();
+            return 'now';
+        } catch (_) { return 'now'; }
+    }
+
+    escapeHtml(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    handleSocialShare(platform) {
+        console.log(`Starting share process for: ${platform}`);
+        
+        const jobTitle = this.currentJob?.jobTitle || this.currentJob?.postName || 'Amazing Job Opportunity';
+        const jobUrl = window.location.href;
+        const jobCompany = this.currentJob?.companyName || this.currentJob?.bankName || 'Great Company';
+        const referralCode = this.currentJob?.referralCode || '';
+        
+        console.log('Share data:', { jobTitle, jobUrl, jobCompany, referralCode });
+        
+        const shareText = `🚀 ${jobTitle} at ${jobCompany}${referralCode ? ` (Referral Code: ${referralCode})` : ''}\n\nCheck out this opportunity: ${jobUrl}\n\n#JobOpportunity #Hiring #Careers`;
+        
+        const encodedText = encodeURIComponent(shareText);
+        const encodedUrl = encodeURIComponent(jobUrl);
+
+        let shareUrl = '';
+
+        switch (platform) {
+            case 'whatsapp':
+                shareUrl = `https://api.whatsapp.com/send?text=${encodedText}`;
+                break;
+                
+            case 'linkedin':
+                shareUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodedUrl}`;
+                break;
+                
+            case 'telegram':
+                shareUrl = `https://t.me/share/url?url=${encodedUrl}&text=${encodedText}`;
+                break;
+                
+            case 'facebook':
+                shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodedUrl}`;
+                break;
+                
+            case 'twitter':
+                const twitterText = encodeURIComponent(`${jobTitle} at ${jobCompany} - ${jobUrl}`);
+                shareUrl = `https://twitter.com/intent/tweet?text=${twitterText}`;
+                break;
+                
+            case 'copy':
+                console.log('Copy to clipboard requested');
+                navigator.clipboard.writeText(shareText).then(() => {
+                    this.showToast('📋 Link copied to clipboard!', 'success');
+                }).catch(error => {
+                    console.error('Failed to copy:', error);
+                    this.fallbackCopyToClipboard(shareText);
+                });
+                return;
+                
+            default:
+                console.warn('Unknown platform:', platform);
+                this.showToast('Unknown platform', 'error');
+                return;
+        }
+
+        console.log(`Share URL for ${platform}:`, shareUrl);
+
+        if (shareUrl && platform !== 'copy') {
+            const isMobile = window.innerWidth <= 768;
+            const width = isMobile ? Math.min(400, window.screen.width - 20) : 600;
+            const height = isMobile ? Math.min(600, window.screen.height - 100) : 400;
+            
+            const left = (window.screen.width - width) / 2;
+            const top = (window.screen.height - height) / 2;
+            
+            console.log(`Opening share window: ${width}x${height}`);
+            
+            const shareWindow = window.open(
+                shareUrl,
+                'share',
+                `width=${width},height=${height},left=${left},top=${top},scrollbars=yes`
+            );
+            
+            if (shareWindow) {
+                this.showToast(`📤 Sharing via ${platform.charAt(0).toUpperCase() + platform.slice(1)}`, 'success');
+            } else {
+                console.error('Share window blocked by popup blocker');
+                this.showToast('❌ Popup blocked! Please allow popups to share.', 'error');
+            }
+        }
+    }
+
+    fallbackCopyToClipboard(text) {
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        textArea.style.top = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        
+        try {
+            document.execCommand('copy');
+            this.showToast('📋 Link copied to clipboard!', 'success');
+        } catch (err) {
+            console.error('Fallback copy failed:', err);
+            this.showToast('❌ Failed to copy link', 'error');
+        }
+        
+        document.body.removeChild(textArea);
+    }
+
+    initializeAds() {
+        console.log('Initializing ads...');
+        
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                setTimeout(() => {
+                    this.initializeAdsOnce();
+                }, 1000);
+            });
+        } else {
+            setTimeout(() => {
+                this.initializeAdsOnce();
+            }, 1000);
+        }
+    }
+
+    initializeAdsOnce() {
+        console.log('Starting ad initialization...');
+        
+        try {
+            const adContainers = document.querySelectorAll('.adsbygoogle:not([data-initialized])');
+            console.log(`Found ${adContainers.length} ad containers to initialize`);
+
+            if (adContainers.length === 0) {
+                console.log('No uninitialized ad containers found');
+                return;
+            }
+
+            adContainers.forEach((container, index) => {
+                const containerId = container.id || `ad-${index}`;
+                
+                if (this.adContainersInitialized.has(containerId)) {
+                    console.log(`Ad container ${containerId} already initialized, skipping`);
+                    return;
+                }
+
+                const rect = container.getBoundingClientRect();
+                const isVisible = rect.width > 0 && rect.height > 0;
+                
+                if (!isVisible) {
+                    console.warn(`Ad container ${containerId} has zero width/height, skipping`);
+                    return;
+                }
+
+                console.log(`Initializing ad container ${containerId} with width: ${rect.width}px`);
+
+                try {
+                    container.setAttribute('data-initialized', 'true');
+                    this.adContainersInitialized.add(containerId);
+                    
+                    (window.adsbygoogle = window.adsbygoogle || []).push({});
+                    
+                    console.log(`Ad container ${containerId} initialization requested`);
+                    
+                } catch (error) {
+                    console.error(`Error initializing ad container ${containerId}:`, error);
+                    container.removeAttribute('data-initialized');
+                    this.adContainersInitialized.delete(containerId);
+                }
+            });
+
+        } catch (error) {
+            console.error('Error in ad initialization process:', error);
+        }
+    }
+
+    updateJobStats(job) {
+        try {
+            console.log('=== DEBUG: updateJobStats started ===');
+            console.log('Full job object:', job);
+            
+            const jobCodeEl = document.getElementById('jobCode');
+            if (jobCodeEl) {
+                console.log('Job code element found');
+                
+                const possibleJobCodeFields = [
+                    'referralCode', 'referralcode', 'refCode', 'refcode', 'referenceCode',
+                    'jobCode', 'jobcode', 'code', 'postShortName', 'postshortname',
+                    'jobId', 'jobid', 'reference', 'ref', 'postCode', 'postcode',
+                    'jobReference', 'job_reference', 'job_ref'
+                ];
+                
+                let foundJobCode = 'N/A';
+                let foundField = null;
+                
+                for (const field of possibleJobCodeFields) {
+                    if (job[field]) {
+                        foundJobCode = job[field];
+                        foundField = field;
+                        break;
+                    }
+                }
+                
+                console.log('Job code search results:', {
+                    foundJobCode,
+                    foundField,
+                    referralCode: job.referralCode
+                });
+                
+                jobCodeEl.textContent = foundJobCode;
+                console.log('Job code set to:', foundJobCode);
+                
+            } else {
+                console.error('Job code element NOT FOUND in DOM');
+            }
+
+            const viewCountEl = document.getElementById('viewCount');
+            if (viewCountEl) {
+                const views = job.views || 0;
+                viewCountEl.textContent = views.toLocaleString();
+                console.log('View count set to:', views);
+            }
+
+            const likeCountEl = document.getElementById('likeCount');
+            const likeButton = document.getElementById('likeButton');
+            
+            if (likeCountEl) {
+                const likes = job.likes || 0;
+                likeCountEl.textContent = likes.toLocaleString();
+                console.log('Like count set to:', likes);
+            }
+
+            if (likeButton) {
+                this.setupLikeButton(likeButton, job);
+            }
+
+            console.log('=== DEBUG: updateJobStats completed ===');
+
+        } catch (error) {
+            console.error('Error updating job stats:', error);
+        }
+    }
+
+    setupLikeButton(likeButton, job) {
+        const jobId = this.jobId;
+        const userId = (auth && auth.currentUser) ? auth.currentUser.uid : null;
+        const currentLikes = job.likes || 0;
+        const likedBy = Array.isArray(job.likedBy) ? job.likedBy : [];
+
+        if (userId && likedBy.includes(userId)) {
+            likeButton.classList.add('liked');
+            likeButton.innerHTML = '<i class="bi bi-heart-fill"></i> <span id="likeCount">' + currentLikes + '</span>';
+        } else {
+            likeButton.classList.remove('liked');
+            likeButton.innerHTML = '<i class="bi bi-heart"></i> <span id="likeCount">' + currentLikes + '</span>';
+        }
+
+        likeButton.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            try {
+                if (!userId) {
+                    this.showToast('Please login to like this job', 'error');
+                    return;
+                }
+                this._suppressLikeToastTs = Date.now();
+                const jobRef = doc(db, this.getCollectionName(), jobId);
+                const latestSnap = await getDoc(jobRef);
+                const latestData = latestSnap.exists() ? latestSnap.data() : {};
+                const latestLikedBy = Array.isArray(latestData.likedBy) ? latestData.likedBy : [];
+                const isLiked = latestLikedBy.includes(userId);
+                if (isLiked) {
+                    await updateDoc(jobRef, {
+                        likes: increment(-1),
+                        likedBy: arrayRemove(userId),
+                        lastLikedAt: serverTimestamp(),
+                        lastLikerId: userId
+                    });
+                    likeButton.classList.remove('liked');
+                    const nextLikes = Math.max(0, (latestData.likes || 1) - 1);
+                    likeButton.innerHTML = '<i class="bi bi-heart"></i> <span id="likeCount">' + nextLikes + '</span>';
+                    this.showToast('Like removed', 'success');
+                } else {
+                    await updateDoc(jobRef, {
+                        likes: increment(1),
+                        likedBy: arrayUnion(userId),
+                        lastLikedAt: serverTimestamp(),
+                        lastLikerId: userId
+                    });
+                    likeButton.classList.add('liked');
+                    const nextLikes = (latestData.likes || 0) + 1;
+                    likeButton.innerHTML = '<i class="bi bi-heart-fill"></i> <span id="likeCount">' + nextLikes + '</span>';
+                    this.showToast('Job liked!', 'success');
+                }
+            } catch (error) {
+                console.error('Error updating likes:', error);
+                this.showToast('Failed to update likes', 'error');
+            }
+        });
+    }
+
+    async fetchAndMergeCompanyData() {
+        const companyId = this.currentJob.companyId;
+        if (!companyId) {
+            this.currentCompany = this.createDefaultCompanyObject();
+            return;
+        }
+
+        try {
+            const companyCacheKey = `company_${companyId}`;
+            if (this.cache.has(companyCacheKey)) {
+                this.currentCompany = this.cache.get(companyCacheKey);
+                return;
+            }
+
+            const companyRef = doc(db, 'companies', companyId);
+            const companyDoc = await getDoc(companyRef);
+
+            this.currentCompany = companyDoc.exists()
+                ? { ...companyDoc.data(), about: companyDoc.data().about || '' }
+                : this.createDefaultCompanyObject();
+
+            this.cache.set(companyCacheKey, this.currentCompany);
+
+            if (companyDoc.exists()) {
+                this.updateJobWithCompanyInfo();
+            }
+        } catch (error) {
+            console.error('Error loading company details:', error);
+            this.currentCompany = this.createDefaultCompanyObject();
+        }
+    }
+
+    createDefaultCompanyObject() {
+        return {
+            name: this.currentJob.companyName,
+            logoURL: this.currentJob.companyLogo,
+            website: this.currentJob.companyWebsite,
+            about: this.currentJob.aboutCompany || this.currentJob.companyAbout || ''
+        };
+    }
+
+    updateJobWithCompanyInfo() {
+        this.currentJob = {
+            ...this.currentJob,
+            companyName: this.currentCompany.name,
+            companyLogo: this.currentCompany.logoURL,
+            companyWebsite: this.currentCompany.website,
+            companyAbout: this.currentCompany.about
+        };
+    }
+
+    updateCompanyDisplay(company) {
+        const logoContainer = document.getElementById('companyLogo');
+        if (logoContainer) {
+            if (this.jobType === 'bank') {
+                logoContainer.innerHTML = '<i class="bi bi-bank2 fs-1 text-primary"></i>';
+            } else if (company.logoURL) {
+                logoContainer.innerHTML = `
+                    <img src="${company.logoURL}" 
+                         alt="${company.name} Logo" 
+                         class="company-logo-img"
+                         onerror="this.src='/assets/images/companies/default-company.webp'">`;
+            } else {
+                logoContainer.innerHTML = '<i class="bi bi-building fs-1 text-secondary"></i>';
+            }
+        }
+
+        const companyNameEl = document.getElementById('companyName');
+        if (companyNameEl) {
+            companyNameEl.textContent = company.name || 'Company Name Not Available';
+            if (company.website) {
+                companyNameEl.innerHTML = `
+                    <a href="${this.ensureHttp(company.website)}" 
+                       target="_blank" 
+                       rel="noopener noreferrer">
+                        ${company.name}
+                    </a>`;
+            }
+        }
+    }
+
+    ensureHttp(url) {
+        if (!url) return '#';
+        return url.startsWith('http') ? url : `https://${url}`;
+    }
+
+    async updateViewCount(jobRef) {
+        const viewKey = `job_view_${this.jobId}`;
+        const hasViewed = sessionStorage.getItem(viewKey);
+
+        if (!hasViewed && !this.viewsTracked) {
+            this.viewsTracked = true;
+            sessionStorage.setItem(viewKey, 'true');
+            const currentViews = this.currentJob.views || 0;
+
+            try {
+                await updateDoc(jobRef, {
+                    views: currentViews + 1,
+                    lastViewedAt: serverTimestamp()
+                });
+                this.currentJob.views = currentViews + 1;
+            } catch (error) {
+                console.error('Error updating view count:', error);
+                sessionStorage.removeItem(viewKey);
+                this.viewsTracked = false;
+            }
+        }
+    }
+
+    async recordViewCounts() {
+        try {
+            if (!this.jobId) return;
+            const uid = (auth && auth.currentUser) ? auth.currentUser.uid : null;
+            const userKey = uid ? uid : ('anon_' + this.ensureAnonId());
+            const docRef = doc(db, 'jobViewCounts', this.jobId);
+            await setDoc(docRef, { totalViews: increment(1), updatedAt: serverTimestamp() }, { merge: true });
+            const localKey = `jobUnique_${this.jobId}_${userKey}`;
+            let isUnique = false;
+            try { isUnique = !localStorage.getItem(localKey); } catch (_) { isUnique = false; }
+            if (isUnique) {
+                await setDoc(docRef, { uniqueUsers: increment(1) }, { merge: true });
+                try { localStorage.setItem(localKey, '1'); } catch (_) {}
+            }
+        } catch (_) {}
+    }
+
+    capitalizeEducationFirstLetter(string) {
+        if (!string) return '';
+
+        let s = String(string).trim();
+        s = s.replace(/be/gi, 'B.E')
+             .replace(/\bb\.\s*e\b/gi, 'B.E')
+             .replace(/me/gi, 'M.E')
+             .replace(/\bm\.\s*e\b/gi, 'M.E')
+             .replace(/btech|b\.\s*tech/gi, 'B.TECH')
+             .replace(/mtech|m\.\s*tech/gi, 'M.TECH')
+             .replace(/bsc|b\.\s*sc/gi, 'B.SC')
+             .replace(/msc|m\.\s*sc/gi, 'M.SC')
+             .replace(/bcom|b\.\s*com/gi, 'B.COM')
+             .replace(/mcom|m\.\s*com/gi, 'M.COM')
+             .replace(/\bbca\b/gi, 'BCA')
+             .replace(/\bmca\b/gi, 'MCA')
+             .replace(/\bbba\b/gi, 'BBA')
+             .replace(/\bmba\b/gi, 'MBA');
+
+        const patterns = {
+            'master of engineering': 'Master of Engineering',
+            'master of technology': 'Master of Technology',
+            'bachelor of engineering': 'Bachelor of Engineering',
+            'bachelor of technology': 'Bachelor of Technology'
+        };
+
+        return s.split(/(\s+|\/|,)/).map(part => {
+            if (/^\s+$|\/|,/.test(part)) return part;
+            const key = part.toLowerCase();
+            if (patterns[key]) return patterns[key];
+            if (part.includes('.')) return part.toUpperCase();
+            if (key.length === 2) return key.toUpperCase();
+            return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+        }).join('');
+    }
+
+    capitalizeFirstLetter(string) {
+        if (!string) return '';
+
+        if (string.toLowerCase().includes('year')) {
+            return string.replace(/([0-9]+)\s*years?/i, '$1 Years');
+        }
+
+        return string.split(' ')
+            .map(word => word.length === 2 ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(' ');
+    }
+
+    initializeCopyLink() {
+        const copyLinkBtn = document.getElementById('copyLink');
+        if (copyLinkBtn) {
+            copyLinkBtn.addEventListener('click', () => this.handleCopyLink());
+        }
+    }
+
+    formatDate(timestamp) {
+        if (!timestamp) return 'Date not available';
+
+        const istOffset = 5.5 * 60 * 60 * 1000;
+        let date;
+
+        if (typeof timestamp === 'string') {
+            date = new Date(timestamp);
+        } else if (timestamp.toDate) {
+            date = timestamp.toDate();
+        } else if (timestamp.seconds) {
+            date = new Date(timestamp.seconds * 1000);
+        } else {
+            date = new Date(timestamp);
+        }
+
+        const istDate = new Date(date.getTime() + istOffset);
+        const now = new Date();
+        const istNow = new Date(now.getTime() + istOffset);
+
+        const diffMs = istNow - istDate;
+        const diffMins = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+        if (diffMins < 60) return `${diffMins} minutes ago`;
+        if (diffHours < 24) return `${diffHours} hours ago`;
+        if (diffDays === 1) return 'Yesterday';
+        if (diffDays < 7) return `${diffDays} days ago`;
+
+        return istDate.toLocaleDateString('en-IN', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+            timeZone: 'Asia/Kolkata'
+        });
+    }
+
+    setupEventListeners() {
+        const applyButtons = document.querySelectorAll('.action-btn.apply-now');
+        applyButtons.forEach(button => {
+            button.addEventListener('click', () => this.handleApplyClick(this.currentJob));
+        });
+    }
+
+    getCollectionName() {
+        return this.jobType === 'private' ? 'jobs' : `${this.jobType}Jobs`;
+    }
+
+    updateJobHeaderDetails(job) {
+        const jobTitleEl = document.getElementById('jobTitle');
+        const companyNameEl = document.getElementById('companyName');
+        const locationEl = document.getElementById('location');
+        const experienceEl = document.getElementById('experience');
+        const salaryEl = document.getElementById('salary');
+        const salaryWrapper = document.getElementById('salaryWrapper');
+
+        if (jobTitleEl) jobTitleEl.textContent = job.jobTitle || job.postName;
+
+        if (companyNameEl) {
+            if (job.companyWebsite) {
+                companyNameEl.innerHTML = `
+                    <a href="${this.ensureHttp(job.companyWebsite)}" 
+                       target="_blank" 
+                       rel="noopener noreferrer"
+                       class="company-name-link">
+                        ${job.companyName || job.bankName}
+                    </a>`;
+            } else {
+                companyNameEl.textContent = job.companyName || job.bankName;
+            }
+        }
+
+        if (locationEl) {
+            const locationText = job.location || job.state;
+            locationEl.textContent = locationText?.length > 28 ? locationText.substring(0, 28) + '...' : locationText;
+            locationEl.title = locationText || 'Location N/A';
+        }
+
+        if (experienceEl) {
+            if (job.experience?.toLowerCase() === 'fresher') {
+                experienceEl.textContent = 'Fresher';
+            } else if (job.experience) {
+                experienceEl.textContent = `${job.experience} Years`;
+            } else {
+                experienceEl.textContent = 'Not specified';
+            }
+        }
+
+        if (salaryEl && salaryWrapper) {
+            if (job.salary?.trim()) {
+                salaryEl.textContent = job.salary;
+                salaryWrapper.style.display = 'inline-flex';
+            } else {
+                salaryWrapper.style.display = 'none';
+            }
+        }
+
+        const logoContainer = document.getElementById('companyLogo');
+        if (this.jobType === 'bank') {
+            logoContainer.innerHTML = '<i class="bi bi-bank2 fs-1 text-primary"></i>';
+        } else {
+            const logoUrl = job.companyLogo?.startsWith('http') ?
+                job.companyLogo :
+                `/assets/images/companies/${job.companyLogo || 'default-company.webp'}`;
+
+            logoContainer.innerHTML = `
+                <img src="${logoUrl}" 
+                     alt="${job.companyName} Logo" 
+                     class="company-logo-img"
+                     onerror="this.src='/assets/images/companies/default-company.webp'">`;
+        }
+    }
+
+    async updateJobContentSections(job) {
+        if (this.jobType === 'bank') {
+            this.updateBankJobContent(job);
+        } else {
+            this.updatePrivateJobContent(job);
+        }
+    }
+
+    updateBankJobContent(job) {
+        const descriptionContent = document.getElementById('descriptionContent');
+        if (descriptionContent) {
+            descriptionContent.innerHTML = this.formatDescription(job.description);
+        }
+
+        this.updateJobDetailsSection(job);
+
+        const skillsSection = document.getElementById('skillsSection');
+        const qualificationsSection = document.getElementById('qualificationsSection');
+        
+        if (skillsSection) skillsSection.style.display = 'none';
+        if (qualificationsSection) qualificationsSection.style.display = 'none';
+
+        const applyButtons = document.querySelectorAll('.action-btn.apply-now');
+        applyButtons.forEach(button => {
+            button.onclick = () => window.open(this.ensureHttp(job.applicationLink), '_blank');
+        });
+    }
+
+    updatePrivateJobContent(job) {
+        const descriptionContent = document.getElementById('descriptionContent');
+        if (descriptionContent) {
+            descriptionContent.innerHTML = this.formatDescription(job.description);
+        }
+
+        this.updateJobDetailsSection(job);
+        this.updateSkillsSection(job);
+        this.updateQualificationsSection(job);
+
+        const applyButtons = document.querySelectorAll('.action-btn.apply-now');
+        applyButtons.forEach(button => {
+            button.onclick = () => this.handleApplyClick(job);
+        });
+    }
+
+    updateJobDetailsSection(job) {
+        const detailsContainer = document.getElementById('jobDetailsContainer');
+        if (!detailsContainer) return;
+
+        let html = '';
+        
+        if (job.experience) {
+            html += `
+                <div class="detail-item">
+                    <span class="detail-label">Experience:</span>
+                    <span class="detail-value">${this.capitalizeFirstLetter(job.experience)}</span>
+                </div>`;
+        }
+        
+        if (job.educationLevel) {
+            html += `
+                <div class="detail-item education-item">
+                    <span class="detail-label">Education:</span>
+                    <span class="detail-value">${this.capitalizeEducationFirstLetter(job.educationLevel)}</span>
+                </div>`;
+        }
+        
+        if (job.location) {
+            html += `
+                <div class="detail-item">
+                    <span class="detail-label">Location:</span>
+                    <span class="detail-value">${this.formatLocation(job.location)}</span>
+                </div>`;
+        }
+        
+        if (job.lastDate) {
+            html += `
+                <div class="detail-item">
+                    <span class="detail-label">Last Date:</span>
+                    <span class="detail-value">${this.capitalizeFirstLetter(job.lastDate)}</span>
+                </div>`;
+        }
+        
+        if (job.salary) {
+            html += `
+                <div class="detail-item">
+                    <span class="detail-label">Salary:</span>
+                    <span class="detail-value">${this.capitalizeFirstLetter(job.salary)}</span>
+                </div>`;
+        }
+        
+        detailsContainer.innerHTML = html;
+    }
+
+    updateSkillsSection(job) {
+        const skillsSection = document.getElementById('skillsSection');
+        const skillsContainer = document.getElementById('skillsContainer');
+        
+        if (!skillsSection || !skillsContainer) return;
+        
+        if (!job.skills || !job.skills.length) {
+            skillsSection.style.display = 'none';
+            return;
+        }
+        
+        skillsContainer.innerHTML = job.skills.map(skill => `
+            <span class="skill-tag">${this.capitalizeFirstLetter(skill)}</span>
+        `).join('');
+    }
+
+    updateQualificationsSection(job) {
+        const qualificationsSection = document.getElementById('qualificationsSection');
+        const qualificationsContent = document.getElementById('qualificationsContent');
+        
+        if (!qualificationsSection || !qualificationsContent) return;
+        
+        if (!job.qualifications) {
+            qualificationsSection.style.display = 'none';
+            return;
+        }
+        
+        qualificationsContent.innerHTML = this.formatQualifications(job.qualifications);
+    }
+
+    formatLocation(location) {
+        if (!location) return 'Location N/A';
+        const formatted = this.capitalizeFirstLetter(location);
+        return formatted.length > 28 ? formatted.substring(0, 28) + '...' : formatted;
+    }
+
+    formatDescription(description) {
+        if (!description) return '';
+        const points = description.split('\n').filter(point => point.trim());
+        return `
+            <ul class="description-list">
+                ${points.map(point => `
+                    <li class="description-point">
+                        ${point.trim()}
+                    </li>
+                `).join('')}
+            </ul>
+        `;
+    }
+
+    formatQualifications(qualifications) {
+        if (!qualifications) return 'No specific qualifications mentioned';
+
+        const techKeywords = [
+            'JavaScript', 'Python', 'Java', 'C\\+\\+', 'React', 'Angular', 'Vue', 'Node.js',
+            'AWS', 'Azure', 'Docker', 'Kubernetes', 'SQL', 'MongoDB', 'Express', 'TypeScript',
+            'HTML', 'CSS', 'Git', 'REST', 'API', 'DevOps', 'CI/CD', 'Machine Learning',
+            'AI', 'Cloud', 'Microservices', 'Spring Boot', '.NET', 'PHP', 'Ruby', 'Swift',
+            'Kotlin', 'Android', 'iOS', 'Flutter', 'React Native', 'GraphQL', 'Redux',
+            'Bootstrap', 'Sass', 'Less', 'jQuery', 'webpack', 'Babel', 'Jenkins', 'CRM', 'Agile', 'GitLab', 'OOP', 'Apache Kafka',
+            'Confluent Kafka', 'Helm', 'NodeJS', 'APIs', 'JUnit', 'Selenium', 'TestNG',
+            'Bachelor', "Bachelor's", 'Bachelors', 'B\\.E', 'B\\.Tech', 'Computer Science', 'Engineering',
+            'Masters', "Master's", 'M\\.Tech', 'M\\.E', 'Information Technology', 'IT',
+            'QA', 'Quality Assurance', 'Quality Analyst', 'Test Engineer', 'SDET',
+            'Architect', 'Software Architect', 'Solutions Architect', 'Technical Architect',
+            'Lead', 'Senior', 'Developer', 'Engineer', 'Analyst', 'Manager'
+        ];
+
+        const boldTechTerms = (text) => {
+            let processedText = text;
+            techKeywords.forEach(keyword => {
+                const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
+                processedText = processedText.replace(regex, '<strong>$&</strong>');
+            });
+            return processedText;
+        };
+
+        if (Array.isArray(qualifications)) {
+            return `
+                <ul class="qualifications-list">
+                    ${qualifications.map(point => `
+                        <li class="qualification-point">
+                            <i class="bi bi-check2-circle text-success"></i>
+                            ${boldTechTerms(point.trim())}
+                        </li>
+                    `).join('')}
+                </ul>
+            `;
+        }
+
+        if (typeof qualifications === 'string') {
+            const points = qualifications.split('\n').filter(point => point.trim());
+            return `
+                <ul class="qualifications-list">
+                    ${points.map(point => `
+                        <li class="qualification-point">
+                            <i class="bi bi-check2-circle text-success"></i>
+                            ${boldTechTerms(point.trim())}
+                        </li>
+                    `).join('')}
+                </ul>
+            `;
+        }
+
+        return 'Qualifications format not supported';
+    }
+
+    async handleApplyClick(job) {
+        try {
+            const user = auth.currentUser;
+    
+            if (user) {
+                const applicationRef = doc(db, 'jobApplications', `${this.jobId}_${user.uid}`);
+                await setDoc(applicationRef, {
+                    userId: user.uid,
+                    jobId: this.jobId,
+                    jobType: this.jobType,
+                    jobTitle: job.jobTitle || job.postName,
+                    companyName: job.companyName || job.bankName,
+                    appliedAt: serverTimestamp(),
+                    status: 'applied'
+                });
+            }
+    
+            if (job.applicationLink) {
+                window.open(this.ensureHttp(job.applicationLink), '_blank');
+            } else {
+                document.getElementById('applicationSection').classList.remove('d-none');
+            }
+        } catch (error) {
+            console.error('Error recording application:', error);
+            if (auth.currentUser) {
+                this.showToast('Error recording application', 'error');
+            }
+        }
+    }
+
+    showToast(message, type = 'info') {
+        const toast = document.createElement('div');
+        toast.className = `toast-notification ${type}`;
+        toast.innerHTML = `
+            <div class="toast-content">
+                <i class="bi ${type === 'success' ? 'bi-check-circle-fill' : 'bi-exclamation-circle-fill'}"></i>
+                <span>${message}</span>
+            </div>
+        `;
+        document.body.appendChild(toast);
+
+        setTimeout(() => toast.remove(), 3000);
+    }
+
+    handleCopyLink() {
+        navigator.clipboard.writeText(window.location.href).then(() => {
+            this.showToast('Link copied to clipboard!', 'success');
+        }).catch(error => {
+            console.error('Failed to copy link:', error);
+            this.showToast('Failed to copy link', 'error');
+        });
+    }
+
+    // NEW METHOD: Smooth scroll to top when navigating between jobs
+    setupNavigationScroll() {
+        // Add smooth scrolling behavior for navigation
+        document.addEventListener('click', (e) => {
+            if (e.target.closest('.nav-job-card') && !e.target.closest('.nav-view-btn')) {
+                // Scroll to top with smooth behavior
+                window.scrollTo({
+                    top: 0,
+                    behavior: 'smooth'
+                });
+            }
+        });
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    new JobDetailsManager();
+
+    // Side ads close buttons (persist via localStorage)
+    try {
+        const leftAd = document.querySelector('.ad-left');
+        const rightAd = document.querySelector('.ad-right');
+        const leftClose = leftAd ? leftAd.querySelector('.ad-close') : null;
+        const rightClose = rightAd ? rightAd.querySelector('.ad-close') : null;
+
+        const LEFT_KEY = 'jd_hide_left_ad';
+        const RIGHT_KEY = 'jd_hide_right_ad';
+
+        if (localStorage.getItem(LEFT_KEY) === '1' && leftAd) leftAd.style.display = 'none';
+        if (localStorage.getItem(RIGHT_KEY) === '1' && rightAd) rightAd.style.display = 'none';
+
+        function ensureRestoreButton() {
+            let restore = document.querySelector('.ad-restore');
+            if (!restore) {
+                restore = document.createElement('button');
+                restore.className = 'ad-restore';
+                restore.type = 'button';
+                restore.setAttribute('aria-label', 'Show ads');
+                restore.textContent = 'Show Ads';
+                document.body.appendChild(restore);
+                restore.addEventListener('click', () => {
+                    try {
+                        localStorage.removeItem(LEFT_KEY);
+                        localStorage.removeItem(RIGHT_KEY);
+                    } catch(e) {}
+                    if (leftAd) leftAd.style.display = '';
+                    if (rightAd) rightAd.style.display = '';
+                    restore.remove();
+                    try { (adsbygoogle = window.adsbygoogle || []).push({}); } catch(_) {}
+                });
+            }
+        }
+
+        function isMobile() {
+            return window.matchMedia('(max-width: 767px)').matches;
+        }
+
+        function updateRestoreVisibility() {
+            const restore = document.querySelector('.ad-restore');
+            if (isMobile()) {
+                if (restore) restore.remove();
+                return;
+            }
+            const anyHidden = (leftAd && leftAd.style.display === 'none') || (rightAd && rightAd.style.display === 'none');
+            if (anyHidden) {
+                ensureRestoreButton();
+            } else if (restore) {
+                restore.remove();
+            }
+        }
+
+        function hideAd(container, key) {
+            if (!container) return;
+            container.style.display = 'none';
+            try { localStorage.setItem(key, '1'); } catch (e) {}
+            updateRestoreVisibility();
+        }
+
+        if (leftClose && leftAd) {
+            leftClose.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                hideAd(leftAd, LEFT_KEY);
+            });
+        }
+
+        if (rightClose && rightAd) {
+            rightClose.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                hideAd(rightAd, RIGHT_KEY);
+            });
+        }
+
+        // At load, show restore button if ads are hidden
+        updateRestoreVisibility();
+
+        const progressEl = document.getElementById('readingProgress');
+        const scrollTopBtn = document.getElementById('scrollTopBtn');
+
+        function updateProgress() {
+            const doc = document.documentElement;
+            const scrolled = doc.scrollTop || document.body.scrollTop;
+            const height = doc.scrollHeight - doc.clientHeight;
+            const pct = height > 0 ? (scrolled / height) * 100 : 0;
+            if (progressEl) progressEl.style.width = pct + '%';
+            if (scrollTopBtn) scrollTopBtn.classList.toggle('show', scrolled > 300);
+        }
+
+        window.addEventListener('scroll', updateProgress);
+        updateProgress();
+
+        if (scrollTopBtn) {
+            scrollTopBtn.addEventListener('click', () => {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            });
+        }
+
+        const footer = document.getElementById('footer-container');
+        if (footer) {
+            const obs = new IntersectionObserver((entries) => {
+                const entry = entries[0];
+                const isAtFooter = entry && entry.isIntersecting;
+                const leftHiddenFlag = localStorage.getItem(LEFT_KEY) === '1';
+                const rightHiddenFlag = localStorage.getItem(RIGHT_KEY) === '1';
+                if (isAtFooter) {
+                    if (leftAd) leftAd.style.display = 'none';
+                    if (rightAd) rightAd.style.display = 'none';
+                    if (scrollTopBtn) scrollTopBtn.classList.add('show');
+                } else {
+                    if (!leftHiddenFlag && leftAd) leftAd.style.display = '';
+                    if (!rightHiddenFlag && rightAd) rightAd.style.display = '';
+                    updateRestoreVisibility();
+                }
+            }, { rootMargin: '0px', threshold: 0.01 });
+            obs.observe(footer);
+        }
+    } catch (e) {
+        console.warn('Side ad close setup error', e);
+    }
+
+    // Reading progress and scroll-top should work regardless of ad setup
+    try {
+        const progressEl = document.getElementById('readingProgress');
+        const scrollTopBtn = document.getElementById('scrollTopBtn');
+
+        function updateProgress() {
+            const doc = document.documentElement;
+            const scrolled = doc.scrollTop || document.body.scrollTop;
+            const height = doc.scrollHeight - doc.clientHeight;
+            const pct = height > 0 ? (scrolled / height) * 100 : 0;
+            if (progressEl) progressEl.style.width = pct + '%';
+            if (scrollTopBtn) scrollTopBtn.classList.toggle('show', scrolled > 150);
+        }
+
+        window.addEventListener('scroll', updateProgress);
+        updateProgress();
+
+        if (scrollTopBtn) {
+            scrollTopBtn.addEventListener('click', () => {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            });
+        }
+    } catch (e) {
+        console.warn('Progress/scroll-top setup error', e);
+    }
+
+    // Openings popup
+    try {
+        const fab = document.getElementById('openingsFab');
+        const popup = document.getElementById('openingsPopup');
+        const closeBtn = document.getElementById('openingsClose');
+        const updatedEl = document.getElementById('snapshotUpdated');
+        const cToday = document.getElementById('countToday');
+        const cWeek = document.getElementById('countWeek');
+        const cMonth = document.getElementById('countMonth');
+        const ptToday = document.getElementById('ptToday');
+        const ptWeek = document.getElementById('ptWeek');
+        const ptMonth = document.getElementById('ptMonth');
+        const areaPath = document.getElementById('areaPath');
+        const linePath = document.getElementById('linePath');
+        const pieToday = document.getElementById('pieToday');
+        const pieWeek = document.getElementById('pieWeek');
+        const pieMonth = document.getElementById('pieMonth');
+        const pieTotal = document.getElementById('pieTotal');
+        const legendToday = document.getElementById('legendToday');
+        const legendWeek = document.getElementById('legendWeek');
+        const legendMonth = document.getElementById('legendMonth');
+
+        const ChartState = { today: null, week: null, month: null };
+        let countsObserver = null;
+
+        function openPopup() {
+            if (!popup) return;
+            popup.classList.add('active');
+            popup.style.display = 'flex';
+            popup.setAttribute('aria-hidden', 'false');
+            if (updatedEl) updatedEl.textContent = 'Updating…';
+            if (ChartState.today != null) {
+                // Use prefetched values
+                if (cToday) cToday.textContent = String(ChartState.today);
+                if (cWeek) cWeek.textContent = String(ChartState.week);
+                if (cMonth) cMonth.textContent = String(ChartState.month);
+                updateChart(ChartState.today, ChartState.week, ChartState.month);
+                updatePie(ChartState.today, ChartState.week, ChartState.month);
+                if (updatedEl) updatedEl.textContent = 'Updated';
+            } else {
+                // Show placeholders immediately
+                if (cToday) cToday.textContent = '—';
+                if (cWeek) cWeek.textContent = '—';
+                if (cMonth) cMonth.textContent = '—';
+                updateOpeningsCounts();
+                // Ensure some chart is visible even before counts arrive
+                updateChartFallback();
+                // Fallback: if counts already exist in DOM from another source, paint chart
+                setTimeout(() => {
+                    updateChartFromCounts();
+                }, 200);
+            }
+            startCountsObserver();
+        }
+
+        function closePopup() {
+            if (!popup) return;
+            popup.classList.remove('active');
+            popup.style.display = 'none';
+            popup.setAttribute('aria-hidden', 'true');
+            stopCountsObserver();
+        }
+
+        // Close when clicking outside the card
+        if (popup) {
+            popup.addEventListener('click', (e) => {
+                const card = e.target.closest('.openings-card');
+                if (!card) closePopup();
+            });
+        }
+
+        if (fab && !window.openOpenings) fab.addEventListener('click', openPopup);
+        if (closeBtn && !window.closeOpenings) closeBtn.addEventListener('click', closePopup);
+
+        async function updateOpeningsCounts() {
+            try {
+                // If Firestore is available, attempt simple counts; otherwise, skip
+                if (typeof window.db === 'undefined') {
+                    if (updatedEl) updatedEl.textContent = 'Offline';
+                    const now = new Date();
+                    setMeta(undefined, now);
+                    return;
+                }
+                const { collection, query, where, getDocs, orderBy, limit, Timestamp } = window.firebase || {};
+                const db = window.db;
+                const nowUtc = new Date();
+                const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+                const toISTLocal = (d) => new Date(d.getTime() + IST_OFFSET_MS);
+                const toUTCfromIST = (d) => new Date(d.getTime() - IST_OFFSET_MS);
+                const istNow = toISTLocal(nowUtc);
+                const istStartToday = new Date(istNow.getFullYear(), istNow.getMonth(), istNow.getDate());
+                const istStart7 = new Date(istStartToday.getTime() - 7 * 24 * 60 * 60 * 1000);
+                const istStart30 = new Date(istStartToday.getTime() - 30 * 24 * 60 * 60 * 1000);
+                const todayStart = toUTCfromIST(istStartToday);
+                const weekStart = toUTCfromIST(istStart7);
+                const monthStart = toUTCfromIST(istStart30);
+                const ts = (d) => Timestamp ? Timestamp.fromDate(d) : d;
+
+                async function countSince(start) {
+                    try {
+                        const q = query(collection(db, 'jobs'), where('createdAt', '>=', ts(start)), where('isActive', '==', true));
+                        const snap = await getDocs(q);
+                        return snap.size || 0;
+                    } catch (e) { return 0; }
+                }
+
+                const [t, wTotal, mTotal] = await Promise.all([
+                    countSince(todayStart),
+                    countSince(weekStart),
+                    countSince(monthStart)
+                ]);
+                const w = Math.max(0, wTotal - t);
+                const m = Math.max(0, mTotal - wTotal);
+
+                if (legendToday) legendToday.textContent = String(t);
+                if (legendWeek) legendWeek.textContent = String(w);
+                if (legendMonth) legendMonth.textContent = String(m);
+                ChartState.today = t; ChartState.week = w; ChartState.month = m;
+                updateChart(t, w, m);
+                updatePie(t, w, m);
+                if (updatedEl) updatedEl.textContent = 'Updated';
+                await updateLatestPosted(db, { collection, query, orderBy, limit, getDocs });
+                const latestDate = getLatestPostedTime();
+                setMeta(latestDate, nowUtc);
+            } catch (e) {
+                if (updatedEl) updatedEl.textContent = 'Could not load stats';
+                // Fallback to DOM counts if available
+                updateChartFromCounts();
+                const now = new Date();
+                setMeta(undefined, now);
+            }
+        }
+
+        function updateChart(t, w, m) {
+            const max = Math.max(1, t, w, m);
+            const baseY = 110; // baseline
+            const maxH = 90;   // max height
+            const scale = maxH / max;
+            const yt = baseY - Math.round(t * scale);
+            const yw = baseY - Math.round(w * scale);
+            const ym = baseY - Math.round(m * scale);
+            const x1 = 40, x2 = 160, x3 = 280;
+
+            if (ptToday) { ptToday.setAttribute('cy', String(yt)); }
+            if (ptWeek) { ptWeek.setAttribute('cy', String(yw)); }
+            if (ptMonth) { ptMonth.setAttribute('cy', String(ym)); }
+
+            const dLine = `M${x1} ${yt} L${x2} ${yw} L${x3} ${ym}`;
+            const dArea = `M${x1} ${baseY} L${x1} ${yt} L${x2} ${yw} L${x3} ${ym} L${x3} ${baseY} Z`;
+            if (linePath) { linePath.setAttribute('d', dLine); }
+            if (areaPath) { areaPath.setAttribute('d', dArea); }
+        }
+
+        function updateChartFromCounts() {
+            const toNum = (el) => {
+                if (!el) return null;
+                const s = (el.textContent || '').replace(/[^0-9]/g, '');
+                return s ? parseInt(s, 10) : null;
+            };
+            const t = toNum(legendToday);
+            const w = toNum(legendWeek);
+            const m = toNum(legendMonth);
+            if (t != null && w != null && m != null) {
+                updateChart(t, w, m);
+                updatePie(t, w, m);
+                if (updatedEl) updatedEl.textContent = 'Updated';
+                const now = new Date();
+                setMeta(undefined, now);
+            }
+        }
+
+        function updateChartFallback() {
+            // Friendly placeholder trend so chart isn't empty
+            const t = 8, w = 24, m = 56;
+            updateChart(t, w, m);
+            updatePie(t, w, m);
+        }
+
+        function updatePie(t, w, m) {
+            const r = 50;
+            const c = 2 * Math.PI * r;
+            const values = [Math.max(0, t), Math.max(0, w), Math.max(0, m)];
+            const sum = values.reduce((a, b) => a + b, 0) || 1; // avoid zero sum
+            const segs = values.map(v => (v / sum) * c);
+            let offset = 0;
+            const apply = (el, len) => {
+                if (!el) return;
+                el.setAttribute('stroke-dasharray', `${len} ${c - len}`);
+                el.setAttribute('stroke-dashoffset', String(offset));
+                offset -= len; // accumulate backwards due to rotate(-90)
+            };
+            apply(pieToday, segs[0]);
+            apply(pieWeek, segs[1]);
+            apply(pieMonth, segs[2]);
+            if (pieTotal) pieTotal.textContent = String(values[0] + values[1] + values[2]);
+            if (legendToday) legendToday.textContent = String(values[0]);
+            if (legendWeek) legendWeek.textContent = String(values[1]);
+            if (legendMonth) legendMonth.textContent = String(values[2]);
+        }
+
+        let latestPostedCache = null;
+        async function updateLatestPosted(db, api) {
+            try {
+                const { collection, query, orderBy, limit, getDocs } = api;
+                const q = query(collection(db, 'jobs'), orderBy('createdAt', 'desc'), limit(1));
+                const snap = await getDocs(q);
+                if (!snap.empty) {
+                    const doc = snap.docs[0].data();
+                    latestPostedCache = doc.createdAt;
+                }
+            } catch (_) {}
+        }
+
+        function getLatestPostedTime() {
+            const ts = latestPostedCache;
+            if (!ts) return undefined;
+            if (ts && typeof ts.toDate === 'function') return ts.toDate();
+            return ts;
+        }
+
+        function setMeta(latestDate, refreshedDate) {
+            try {
+                const latestEl = document.getElementById('latestPosted');
+                const refEl = document.getElementById('lastRefreshed');
+                const fmt = (d) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(d);
+                if (latestEl) latestEl.textContent = latestDate ? `Latest: ${fmt(latestDate)}` : 'Offline';
+                if (refEl) refEl.textContent = refreshedDate ? `Refreshed: ${fmt(refreshedDate)}` : '';
+            } catch (_) {}
+        }
+
+        // Prefetch counts shortly after page becomes idle
+        try {
+            const prefetch = () => updateOpeningsCounts();
+            if ('requestIdleCallback' in window) {
+                requestIdleCallback(prefetch, { timeout: 1500 });
+            } else {
+                setTimeout(prefetch, 1200);
+            }
+        } catch (_) {}
+    } catch (e) {
+        console.warn('Openings popup setup error', e);
+    }
+});
+
+export { JobDetailsManager };
