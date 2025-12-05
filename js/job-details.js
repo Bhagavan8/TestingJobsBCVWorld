@@ -1164,7 +1164,7 @@ class JobDetailsManager {
              .replace(/\bmca\b/gi, 'MCA')
              .replace(/\bbba\b/gi, 'BBA')
              .replace(/\bmba\b/gi, 'MBA');
-
+             
         const patterns = {
             'master of engineering': 'Master of Engineering',
             'master of technology': 'Master of Technology',
