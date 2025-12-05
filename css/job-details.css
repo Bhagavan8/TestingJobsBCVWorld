@@ -438,8 +438,8 @@ body {
     text-align: left;
     max-width: 800px;
     margin: 0 auto;
-    word-break: break-word;
-    overflow-wrap: anywhere;
+    word-break: normal;
+    overflow-wrap: break-word;
 }
 
 .description-content p {
@@ -529,8 +529,8 @@ body {
     max-width: 800px;
     margin: 0 auto;
     text-align: left;
-    word-break: break-word;
-    overflow-wrap: anywhere;
+    word-break: normal;
+    overflow-wrap: break-word;
     word-spacing: normal;
     letter-spacing: normal;
 }
@@ -991,8 +991,6 @@ body {
 
 .nav-education {
     font-size: 13px;
-    color: #64748b;
-    background: #f1f5f9;
     padding: 4px 8px;
     border-radius: 4px;
     display: inline-block;
@@ -1215,6 +1213,11 @@ body {
     }
 }
 
+/* Desktop: keep details stacked in a single column */
+@media (min-width: 768px) {
+    .nav-job-details { flex-direction: column !important; align-items: flex-start !important; gap: 6px !important; }
+}
+
 /* Mobile Devices (576px - 767px) */
 @media (max-width: 767px) {
     .main-container {
@@ -1363,7 +1366,7 @@ body {
     .nav-job-content { flex-direction: column !important; align-items: center !important; text-align: center !important; }
     .skills-container { display: grid; grid-template-columns: 1fr; gap: 6px; justify-items: center; }
     .skill-tag { display: block; width: 100%; }
-    .nav-view-btn { display: inline-flex; justify-content: center; margin: 0 auto; }
+    .nav-view-btn { display: block; width: max-content; margin: 12px auto 0; text-align: center; }
     .social-share-buttons { flex-wrap: wrap !important; justify-content: center !important; width: 100%; }
     .social-share-buttons .social-share-btn { flex: 1 1 45%; min-width: 140px; }
     body, .page-wrapper, .main-container { overflow-x: hidden; }

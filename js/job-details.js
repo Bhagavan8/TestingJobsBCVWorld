@@ -1454,7 +1454,7 @@ class JobDetailsManager {
             <ul class="description-list">
                 ${points.map(point => `
                     <li class="description-point">
-                        ${point.trim()}
+                        ${this.escapeHTML(point.trim())}
                     </li>
                 `).join('')}
             </ul>
@@ -1480,12 +1480,19 @@ class JobDetailsManager {
         ];
 
         const boldTechTerms = (text) => {
-            let processedText = text;
-            techKeywords.forEach(keyword => {
-                const regex = new RegExp(`\\b${keyword}\\b`, 'gi');
-                processedText = processedText.replace(regex, '<strong>$&</strong>');
+            let s = text;
+            const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            techKeywords.forEach((keyword) => {
+                const safe = escapeRegex(keyword);
+                const boundary = new RegExp(`(^|[^A-Za-z0-9])(${safe})(?=$|[^A-Za-z0-9])`, 'gi');
+                s = s.replace(boundary, (match, pre, word) => `${pre}<strong>${word}</strong>`);
+                if (keyword.includes("'")) {
+                    const escaped = safe.replace(/'/g, '&#39;');
+                    const boundaryEsc = new RegExp(`(^|[^A-Za-z0-9])(${escaped})(?=$|[^A-Za-z0-9])`, 'gi');
+                    s = s.replace(boundaryEsc, (match, pre, word) => `${pre}<strong>${word}</strong>`);
+                }
             });
-            return processedText;
+            return s;
         };
 
         if (Array.isArray(qualifications)) {
@@ -1494,7 +1501,7 @@ class JobDetailsManager {
                     ${qualifications.map(point => `
                         <li class="qualification-point">
                             <i class="bi bi-check2-circle text-success"></i>
-                            ${boldTechTerms(point.trim())}
+                            ${boldTechTerms(this.escapeHTML(point.trim()))}
                         </li>
                     `).join('')}
                 </ul>
@@ -1508,7 +1515,7 @@ class JobDetailsManager {
                     ${points.map(point => `
                         <li class="qualification-point">
                             <i class="bi bi-check2-circle text-success"></i>
-                            ${boldTechTerms(point.trim())}
+                            ${boldTechTerms(this.escapeHTML(point.trim()))}
                         </li>
                     `).join('')}
                 </ul>
@@ -1516,6 +1523,15 @@ class JobDetailsManager {
         }
 
         return 'Qualifications format not supported';
+    }
+
+    escapeHTML(text) {
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     async handleApplyClick(job) {
@@ -1587,7 +1603,8 @@ class JobDetailsManager {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    new JobDetailsManager();
+    const mgr = new JobDetailsManager();
+    window.jobDetailsManager = mgr;
 
     // Side ads close buttons (persist via localStorage)
     try {

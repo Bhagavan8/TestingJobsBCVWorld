@@ -788,9 +788,7 @@
             // No auto-open; open only when user clicks the FAB
         });
     </script>
-    <style>
-
-    </style>
+  
 
     <script>
         // IMPROVED Ads Popup functionality
@@ -827,8 +825,9 @@
          */
 
         (function () {
-            const VERSION_URL = '/meta/version.json'; // produced during deploy
-            const CHECK_INTERVAL = 30_000; // 30s (tweak to 60_000 for less traffic)
+            const VERSION_URL = '/meta/version.json';
+            const CHECK_INTERVAL = 30_000;
+            const STORAGE_KEY = 'app_version';
             let currentVersion = null;
             let checking = false;
 
@@ -870,7 +869,7 @@
             }
 
             // clear SW registrations + caches then reload
-            async function clearAndReload() {
+            async function clearAndReload(newVersion) {
                 try {
                     // unregister service workers
                     if ('serviceWorker' in navigator) {
@@ -884,9 +883,10 @@
                         await Promise.all(keys.map(k => caches.delete(k)));
                     }
 
-                    // force reload from server
-                    // using replace avoids creating new history entry
-                    location.reload(true);
+                    try { if (newVersion) localStorage.setItem(STORAGE_KEY, newVersion); } catch(_) {}
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('_v', newVersion || Date.now().toString());
+                    window.location.replace(url.toString());
                 } catch (e) {
                     console.error('Update reload failed, doing normal reload', e);
                     location.reload();
@@ -928,14 +928,8 @@
                 try {
                     const server = await fetchServerVersion();
                     if (!server || !server.version) return;
-                    if (!currentVersion) {
-                        currentVersion = server.version;
-                        return;
-                    }
-                    if (server.version !== currentVersion) {
-                        console.info('New version detected', currentVersion, '->', server.version);
-                        showUpdateBanner();
-                    }
+                    if (!currentVersion) { currentVersion = server.version; }
+                    if (server.version !== currentVersion) { clearAndReload(server.version); }
                 } finally {
                     checking = false;
                 }
@@ -943,13 +937,19 @@
 
             // start polling after DOM ready
             document.addEventListener('DOMContentLoaded', () => {
-                // initial grab (avoid race with server-side rendered content)
-                fetchServerVersion().then(s => { if (s && s.version) currentVersion = s.version; });
+                try { currentVersion = localStorage.getItem(STORAGE_KEY) || null; } catch(_) {}
+                fetchServerVersion().then(s => {
+                    if (!s || !s.version) return;
+                    if (!currentVersion) {
+                        currentVersion = s.version;
+                        try { localStorage.setItem(STORAGE_KEY, s.version); } catch(_) {}
+                    } else if (s.version !== currentVersion) {
+                        clearAndReload(s.version);
+                        return;
+                    }
+                    setInterval(checkForUpdate, CHECK_INTERVAL);
+                });
 
-                // run periodic checks
-                setInterval(checkForUpdate, CHECK_INTERVAL);
-
-                // Optional: also check once when page becomes visible again (tab switch)
                 document.addEventListener('visibilitychange', () => {
                     if (document.visibilityState === 'visible') checkForUpdate();
                 });
