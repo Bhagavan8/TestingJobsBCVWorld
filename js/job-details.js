@@ -1755,6 +1755,44 @@ document.addEventListener('DOMContentLoaded', () => {
         console.warn('Progress/scroll-top setup error', e);
     }
 
+    try {
+        const sticky = document.getElementById('stickyAd');
+        const close = document.getElementById('stickyClose');
+        const fallback = document.getElementById('stickyFallback');
+        const ins = sticky ? sticky.querySelector('ins.adsbygoogle') : null;
+        var userDismissed = false;
+        var autoHiddenByFooter = false;
+        function showSticky(){ if (sticky){ sticky.classList.add('active'); sticky.setAttribute('aria-hidden','false'); } }
+        function hideSticky(){ if (sticky){ sticky.classList.remove('active'); sticky.setAttribute('aria-hidden','true'); } }
+        if (close) close.addEventListener('click', function(){ userDismissed = true; hideSticky(); });
+        if (ins) {
+            try { (window.adsbygoogle = window.adsbygoogle || []).push({}); }
+            catch (_) { if (fallback) fallback.style.display = 'block'; }
+        }
+        setTimeout(showSticky, 800);
+        const footer = document.getElementById('footer-container');
+        if (footer && 'IntersectionObserver' in window) {
+            const obs = new IntersectionObserver(function(entries){
+                for (var i=0;i<entries.length;i++){ if (entries[i].isIntersecting) { autoHiddenByFooter = true; hideSticky(); break; } }
+            }, { root: null, threshold: 0 });
+            obs.observe(footer);
+        } else {
+            window.addEventListener('scroll', function(){
+                var doc = document.documentElement;
+                var scrolled = doc.scrollTop || document.body.scrollTop;
+                var height = (doc.scrollHeight - doc.clientHeight);
+                if (height > 0 && scrolled >= height - 2) { autoHiddenByFooter = true; hideSticky(); }
+            });
+        }
+        var lastY = window.scrollY;
+        window.addEventListener('scroll', function(){
+            var y = window.scrollY;
+            var up = y < lastY - 2;
+            if (up && autoHiddenByFooter && !userDismissed && sticky && !sticky.classList.contains('active')) { showSticky(); autoHiddenByFooter = false; }
+            lastY = y;
+        });
+    } catch (_) {}
+
     // Openings popup
     try {
         const fab = document.getElementById('openingsFab');

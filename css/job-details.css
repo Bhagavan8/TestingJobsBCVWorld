@@ -2033,6 +2033,12 @@ a {
     }
 }
 
+/* Sticky bottom ad overrides for job details */
+.sticky-ad { z-index: 100005 !important; }
+.sticky-inner { max-width: none !important; width: 100% !important; border-radius: 0 !important; }
+.sticky-ad ins.adsbygoogle { min-height: var(--sticky-height-desktop) !important; }
+@media (max-width: 600px) { .sticky-ad ins.adsbygoogle { min-height: var(--sticky-height-mobile) !important; } }
+
 @media (min-width: 992px) and (max-width: 1199px) {
     .scroll-top { right: 160px; }
 }
