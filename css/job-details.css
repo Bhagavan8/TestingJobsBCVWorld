@@ -2025,7 +2025,7 @@ a {
 
 @media (max-width: 767px) {
     .overview-section { text-align: left; }
-    .section-title { text-align: left; }
+    .section-title { text-align: center; }
     .description-content,
     .qualifications-content {
         max-width: 100%;
